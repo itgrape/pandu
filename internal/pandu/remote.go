@@ -212,7 +212,7 @@ func (r *remote) delete(ctx context.Context, file *api.ListFileInfo) error {
 
 const sliceSize = 4 * 1024 * 1024
 
-func (r *remote) upload(ctx context.Context, target string, f io.ReaderAt, size int64, blocks []string) (remoteVersion, error) {
+func (r *remote) upload(ctx context.Context, target string, f io.ReaderAt, size int64, blocks []string, progress func(done, total int)) (remoteVersion, error) {
 	// The Netdisk Open Platform's create and precreate endpoints use rtype=3
 	// for replacement at the same path. Both requests must use the same value.
 	rtype := api.Ptr(3)
@@ -237,7 +237,11 @@ func (r *remote) upload(ctx context.Context, target string, f io.ReaderAt, size 
 	if pre.UploadID == "" {
 		return remoteVersion{}, errors.New("预上传响应缺少 uploadid")
 	}
-	for _, part := range pre.BlockList {
+	total := len(pre.BlockList)
+	if progress != nil {
+		progress(0, total)
+	}
+	for i, part := range pre.BlockList {
 		if part < 0 || part >= len(blocks) {
 			return remoteVersion{}, fmt.Errorf("服务器返回无效分片序号 %d", part)
 		}
@@ -262,6 +266,9 @@ func (r *remote) upload(ctx context.Context, target string, f io.ReaderAt, size 
 		}
 		if !strings.EqualFold(result.MD5, blocks[part]) {
 			return remoteVersion{}, fmt.Errorf("分片 %d 校验失败，源文件可能已变化", part)
+		}
+		if progress != nil {
+			progress(i+1, total)
 		}
 	}
 	// The server can omit blocks it already has. Create still needs the full,

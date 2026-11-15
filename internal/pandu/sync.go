@@ -17,8 +17,9 @@ import (
 )
 
 type SyncOptions struct {
-	DryRun bool
-	Delete bool
+	DryRun         bool
+	Delete         bool
+	UploadProgress io.Writer
 }
 
 type syncRecord struct {
@@ -53,6 +54,12 @@ type syncItem struct {
 }
 
 func syncFiles(ctx context.Context, out io.Writer, s *session, local *localTree, remotePath string, upload bool, options SyncOptions) (err error) {
+	if !upload || options.DryRun {
+		options.UploadProgress = nil
+	}
+	if options.UploadProgress != nil {
+		fmt.Fprintf(options.UploadProgress, "正在扫描 %q 并对比网盘目录…\n", local.absolute)
+	}
 	drive := &remote{session: s}
 	items, parents, err := planSync(ctx, local, drive, remotePath, upload, options.Delete)
 	if err != nil {
@@ -118,7 +125,7 @@ func syncFiles(ctx context.Context, out io.Writer, s *session, local *localTree,
 			}
 			created++
 		case !item.dir:
-			record, changed, err := syncFile(ctx, out, local, drive, netPath, item, index.Files[netPath], upload, options.DryRun)
+			record, changed, err := syncFile(ctx, out, local, drive, netPath, item, index.Files[netPath], upload, options)
 			if err != nil {
 				return fmt.Errorf("同步 %q: %w", item.rel, err)
 			}
@@ -276,7 +283,7 @@ func planSync(ctx context.Context, local *localTree, drive *remote, remotePath s
 	return items, parents, nil
 }
 
-func syncFile(ctx context.Context, out io.Writer, local *localTree, drive *remote, netPath string, item syncItem, record syncRecord, upload, dryRun bool) (syncRecord, bool, error) {
+func syncFile(ctx context.Context, out io.Writer, local *localTree, drive *remote, netPath string, item syncItem, record syncRecord, upload bool, options SyncOptions) (syncRecord, bool, error) {
 	var checksum string
 	var blocks []string
 	var file *os.File
@@ -289,6 +296,9 @@ func syncFile(ctx context.Context, out io.Writer, local *localTree, drive *remot
 		if upload {
 			file = f
 			defer file.Close()
+			if options.UploadProgress != nil {
+				fmt.Fprintf(options.UploadProgress, "正在计算校验值 %q（%d 字节）…\n", netPath, item.local.Size())
+			}
 		}
 		checksum, blocks, err = hashFile(ctx, f, item.local, upload)
 		if !upload {
@@ -304,15 +314,15 @@ func syncFile(ctx context.Context, out io.Writer, local *localTree, drive *remot
 
 	result := syncRecord{SHA256: checksum}
 	if upload {
-		err := reportAction(out, dryRun, "put", netPath, func() error {
+		err := reportAction(out, options.DryRun, "put", netPath, func() error {
 			var err error
-			result.Remote, err = drive.upload(ctx, netPath, file, item.local.Size(), blocks)
+			result.Remote, err = drive.upload(ctx, netPath, file, item.local.Size(), blocks, uploadReporter(options.UploadProgress, netPath))
 			return err
 		})
 		return result, true, err
 	}
 	result.Remote = version(item.remote)
-	err := reportAction(out, dryRun, "get", filepath.Join(local.absolute, filepath.FromSlash(item.rel)), func() error {
+	err := reportAction(out, options.DryRun, "get", filepath.Join(local.absolute, filepath.FromSlash(item.rel)), func() error {
 		request, cancel := context.WithTimeout(ctx, 2*time.Hour)
 		defer cancel()
 		body, err := drive.download(request, item.remote)

@@ -46,6 +46,7 @@ func TestPutIncremental(t *testing.T) {
 	var id, precreates, creates, slices int
 	var size int64
 	var wantedBlocks []string
+	var progress strings.Builder
 	s := testSession(t, func(req *http.Request) (*http.Response, error) {
 		q := req.URL.Query()
 		switch q.Get("method") {
@@ -68,6 +69,9 @@ func TestPutIncremental(t *testing.T) {
 			return reply(req, 200, `{"return_type":1,"uploadid":"upload","block_list":[1]}`)
 		case "upload":
 			slices++
+			if !strings.Contains(progress.String(), "0/1 个待传分片") {
+				t.Fatalf("initial progress missing before slice upload: %q", progress.String())
+			}
 			if q.Get("partseq") != "1" {
 				t.Fatalf("uploaded unrequested block %v", q)
 			}
@@ -87,6 +91,10 @@ func TestPutIncremental(t *testing.T) {
 			return reply(req, 200, fmt.Sprintf(`{"md5":"%x"}`, md5.Sum(data)))
 		case "create":
 			creates++
+			if !strings.Contains(progress.String(), "1/1 个待传分片（100.0%）") ||
+				!strings.Contains(progress.String(), "正在合并") {
+				t.Fatalf("progress missing before finalizing: %q", progress.String())
+			}
 			if err := req.ParseForm(); err != nil {
 				t.Fatal(err)
 			}
@@ -115,7 +123,10 @@ func TestPutIncremental(t *testing.T) {
 	defer l.root.Close()
 	run := func(dry bool) string {
 		var out strings.Builder
-		if err := syncFiles(context.Background(), &out, s, l, "/save", true, SyncOptions{DryRun: dry}); err != nil {
+		progress.Reset()
+		if err := syncFiles(context.Background(), &out, s, l, "/save", true, SyncOptions{
+			DryRun: dry, UploadProgress: &progress,
+		}); err != nil {
 			t.Fatal(err)
 		}
 		return out.String()
@@ -124,7 +135,10 @@ func TestPutIncremental(t *testing.T) {
 	if out := run(true); !strings.Contains(out, "传输 1") || precreates != 0 {
 		t.Fatalf("dry run sent writes or missed the transfer: %q", out)
 	}
-	if out := run(false); !strings.Contains(out, "传输 1") {
+	if progress.Len() != 0 {
+		t.Fatalf("dry run displayed progress: %q", progress.String())
+	}
+	if out := run(false); !strings.Contains(out, "传输 1") || strings.Contains(out, "待传分片") {
 		t.Fatal(out)
 	}
 	if out := run(false); !strings.Contains(out, "跳过 1") || creates != 1 {

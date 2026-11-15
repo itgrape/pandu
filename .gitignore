@@ -1,0 +1,6 @@
+/pandu
+/pandu.exe
+/config.json
+*.json.token.json
+*.json.sync.json
+*.json.lock
